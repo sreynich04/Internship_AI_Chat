@@ -1,0 +1,30 @@
+[
+    {
+        "id": 1,
+        "category": "Factual (English)",
+        "question": "Where is CamTech University located?",
+        "expected_keywords": ["Chroy", "Phnom Penh", "Prek Tasek"],
+        "should_refuse": false
+    },
+    {
+        "id": 2,
+        "category": "Factual (Khmer)",
+        "question": "តើ CamTech មានទីតាំងនៅឯណា?",
+        "expected_keywords": ["ជ្រោយចង្វារ", "ភ្នំពេញ"],
+        "should_refuse": false
+    },
+    {
+        "id": 3,
+        "category": "Out-of-Domain Refusal",
+        "question": "What is the capital of France?",
+        "expected_keywords": ["I do not have that information", "contact the university"],
+        "should_refuse": true
+    },
+    {
+        "id": 4,
+        "category": "Contact Info",
+        "question": "What is the phone number of CamTech?",
+        "expected_keywords": ["78 21 21 81", "86 21 21 81"],
+        "should_refuse": false
+    }
+]

@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UniGUIDE</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        #chat-window::-webkit-scrollbar { width: 4px; }
+        #chat-window::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
+
+        .user-message {
+            align-self: flex-end;
+            background: #2563eb; 
+            color: white;
+            border-radius: 1.25rem 1.25rem 0.25rem 1.25rem;
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2);
+            padding: 14px 18px;
+            max-width: 85%;
+            font-size: 0.95rem;
+        }
+
+        .bot-message {
+            align-self: flex-start;
+            background: white;
+            color: #1e293b;
+            border-radius: 1.25rem 1.25rem 1.25rem 0.25rem;
+            border: 1px solid #f1f5f9;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            padding: 14px 18px;
+            max-width: 85%;
+            font-size: 0.95rem;
+            line-height: 1.6;
+        }
+
+        /* Styling for UniGUIDE output structures */
+        .bot-message b { font-weight: 700; color: #1e3a8a; }
+        .bot-message ul { list-style-type: none; padding-left: 0; margin-top: 8px; }
+        .bot-message li { margin-bottom: 8px; padding-left: 20px; position: relative; }
+        .bot-message li::before { content: "•"; position: absolute; left: 0; color: #2563eb; font-weight: bold; }
+    </style>
+</head>
+<body class="bg-slate-100 font-sans h-screen flex items-center justify-center p-4">
+
+    <div class="bg-white w-full max-w-4xl h-[90vh] rounded-2xl shadow-2xl overflow-hidden flex flex-col border border-slate-200">
+        
+        <header class="bg-white border-b border-slate-100 p-4 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <div class="bg-blue-600 p-2 rounded-lg text-white">
+                    <i data-lucide="graduation-cap" class="w-6 h-6"></i>
+                </div>
+                <div>
+                    <h1 class="text-xl font-bold text-slate-800 leading-tight">UniGUIDE</h1>
+                    <p class="text-xs text-slate-500 font-medium tracking-wide uppercase">UniGUIDE</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="flex h-2 w-2 bg-green-500 rounded-full animate-pulse"></span>
+                <span class="text-[10px] font-bold text-slate-400 uppercase">Live Node</span>
+            </div>
+        </header>
+
+        <div id="chat-window" class="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-50/50 flex flex-col">
+            <div class="flex justify-center mb-2">
+                <span class="text-[10px] uppercase tracking-widest text-slate-400 font-bold bg-white px-3 py-1 rounded-full border border-slate-100 shadow-sm">AI Counseling Session Active</span>
+            </div>
+        </div>
+
+        <div class="p-4 bg-white border-t border-slate-100">
+            <div class="relative flex items-center bg-slate-100 rounded-xl p-1 focus-within:ring-2 ring-blue-500 transition-all">
+                <input type="text" id="user-input" 
+                       class="w-full bg-transparent border-none focus:ring-0 p-3 text-slate-700 placeholder-slate-400" 
+                       placeholder="Describe your interests or ask university questions...">
+                <button onclick="sendMessage()" 
+                        class="bg-blue-600 hover:bg-blue-700 text-white p-3 rounded-lg transition-colors flex items-center justify-center shadow-lg active:scale-95 transform">
+                    <i data-lucide="send" class="w-5 h-5"></i>
+                </button>
+            </div>
+            <div class="flex justify-between items-center px-1 mt-2">
+                <p class="text-[10px] text-slate-400 font-medium">Fine-tuned Model V.2.0.4 • Academic Support</p>
+                <p class="text-[10px] text-slate-300 tracking-tighter">SECURE_SSL_ACTIVE</p>
+            </div>
+        </div>
+    </div>
+
+    <div id="modal-backdrop" class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm hidden z-50 flex items-center justify-center">
+        <div class="bg-white p-8 rounded-3xl shadow-2xl max-w-xs w-full text-center border border-slate-100">
+            <div class="animate-spin inline-block w-12 h-12 border-[4px] border-blue-600 border-t-transparent rounded-full mb-4"></div>
+            <h3 class="text-lg font-bold text-slate-800">Analyzing Profile</h3>
+            <p class="text-slate-500 mt-2 text-sm leading-relaxed">Evaluating majors based on our logic...</p>
+        </div>
+    </div>
+
+    <script>
+        const chatWindow = document.getElementById('chat-window');
+        const userInput = document.getElementById('user-input');
+        const modalBackdrop = document.getElementById('modal-backdrop');
+
+        // Generate a new unique session ID every time the page loads or refreshes
+        const sessionId = "session_" + Date.now();
+
+        // Global array to store conversation history for the current page session
+        let chatHistory = [];
+
+        function showModal() { modalBackdrop.classList.remove('hidden'); }
+        function hideModal() { modalBackdrop.classList.add('hidden'); }
+
+        function formatResponse(text) {
+            text = text.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
+            if (text.includes('- ') || text.includes('* ')) {
+                const lines = text.split('\n');
+                let formatted = '';
+                let inList = false;
+                lines.forEach(line => {
+                    if (line.trim().startsWith('- ') || line.trim().startsWith('* ')) {
+                        if (!inList) { formatted += '<ul>'; inList = true; }
+                        formatted += `<li>${line.trim().substring(2)}</li>`;
+                    } else {
+                        if (inList) { formatted += '</ul>'; inList = false; }
+                        formatted += line + '<br>';
+                    }
+                });
+                return formatted;
+            }
+            return text.replace(/\n/g, '<br>');
+        }
+
+        function displayMessage(text, sender) {
+            const div = document.createElement('div');
+            div.className = sender === 'user' ? 'user-message' : 'bot-message';
+            div.innerHTML = sender === 'user' ? text : formatResponse(text);
+            chatWindow.appendChild(div);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+
+        async function sendMessage() {
+            const userText = userInput.value.trim();
+            if (!userText) return;
+
+            displayMessage(userText, 'user');
+            userInput.value = '';
+            showModal();
+
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ 
+                        message: userText, 
+                        history: chatHistory,
+                        session_id: sessionId  // <-- Passed session_id correctly
+                    })
+                });
+
+                const data = await response.json();
+                const aiAnswer = data.response;
+
+                hideModal();
+                displayMessage(aiAnswer, 'bot');
+
+                // Update frontend memory for multi-turn history
+                chatHistory.push({"role": "user", "content": userText});
+                chatHistory.push({"role": "assistant", "content": aiAnswer});
+
+            } catch (error) {
+                console.error("Error:", error);
+                hideModal();
+                displayMessage("⚠️ Error: Could not reach the AI server.", 'bot');
+            }
+        }
+
+        userInput.addEventListener('keypress', (e) => { if(e.key === 'Enter') sendMessage(); });
+        
+        window.onload = () => { 
+            lucide.createIcons(); 
+            displayMessage("Welcome to the Camtech University AI bot. Please describe your academic goals or ask about specific university programs.", 'bot');
+        };
+    </script>
+</body>
+</html>
