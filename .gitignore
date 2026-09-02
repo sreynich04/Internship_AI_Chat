@@ -1,6 +1,16 @@
+# Environment variables & secrets
 .env
-chat_history.json
+
+# Virtual environments
+.venv/
 venv/
+
+# Local databases & model caches
+chat_history.db
+chat_history.json
+embeddings_cache.npy
+
+# Python cache & OS files
 __pycache__/
 *.pyc
 .DS_Store
