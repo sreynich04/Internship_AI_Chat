@@ -1,0 +1,17 @@
+//  This JSON file acts as your test dataset. Instead of hardcoding test cases inside your Python scripts, 
+// it stores the exact scenarios you want to evaluate: 
+// user_input: The prompt or question sent to your chatbot. 
+// expected_tool: The specific MCP tool function the chatbot should choose to invoke. 
+// expected_args: The exact JSON parameters the chatbot should extract and pass to that tool. 
+// expected_keywords: Key ground-truth facts expected in the final answer. 
+
+
+[
+  {
+    "id": "mcp_01",
+    "user_input": "What is the status of server us-east-1?",
+    "expected_tool": "get_server_status",
+    "expected_args": {"server_id": "us-east-1"},
+    "expected_keywords": ["online", "healthy"]
+  }
+]
