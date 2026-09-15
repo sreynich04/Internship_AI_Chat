@@ -21,15 +21,48 @@ KNOWN_MAJORS = [
     "Media and Communication Technology"
 ]
 
+# Updated MAJOR_KEYWORDS using distinct single words and variations
 MAJOR_KEYWORDS = {
-    "Software Engineering": ["code", "coding", "programming", "web", "app", "software", "developer", "javascript", "python", "fullstack", "ui", "ux"],
-    "AI and Data Science": ["ai", "data", "machine learning", "statistics", "analytics", "python", "model", "neural", "numbers", "big data", "deep learning", "math", "maths", "mathematics", "quantitative"],
-    "Architecture": ["building", "architecture", "structure", "3d", "spatial", "drafting", "blueprint", "construction"],
-    "Cyber Security": ["security", "hacking", "network", "cyber", "firewall", "encryption", "defense"],
-    "Robotics and AI": ["robot", "robotics", "hardware", "sensor", "automation", "mechatronics"],
-    "Business Intelligence": ["business", "finance", "market", "management", "strategy", "bi", "analytics", "economics", "data", "reports"],
-    "Interior Design": ["interior", "decor", "design", "furniture", "space", "aesthetics"],
-    "Media and Communication Technology": ["media", "graphics", "video", "communication", "content", "journalism"]
+    "Software Engineering": [
+        "code", "coding", "program", "programming", "software", "developer", "fullstack", 
+        "backend", "frontend", "api", "apis", "git", "database", "databases", "app", "apps", "web"
+    ],
+    "AI and Data Science": [
+        "ai", "data", "machine learning", "statistics", "analytics", "python", "model", 
+        "models", "neural", "big data", "deep learning", "math", "mathematics", "quantitative"
+    ],
+    "Architecture": [
+        "building", "buildings", "blueprint", "blueprints", "drafting", "structural", 
+        "structure", "structures", "civil", "cad", "construction", "urban", "skyscraper", "skyscrapers"
+    ],
+    "Cyber Security": [
+        "security", "hacking", "hacker", "hackers", "network", "networks", "cyber", 
+        "firewall", "firewalls", "encryption", "malware", "defense", "intrusion"
+    ],
+    "Robotics and AI": [
+        "robot", "robots", "robotic", "robotics", "hardware", "sensor", "sensors", 
+        "automation", "mechatronics", "microcontroller", "microcontrollers", "bot", "bots", "actuator"
+    ],
+    "Business Intelligence": [
+        "business", "finance", "financial", "market", "markets", "corporate", 
+        "bi", "strategy", "strategies", "economics", "reports", "enterprise"
+    ],
+    "Interior Design": [
+        "interior", "decor", "decorating", "room", "rooms", "furniture", "furnishing", 
+        "aesthetic", "aesthetics", "indoor", "styling", "decorations"
+    ],
+    "Educational Technology": [
+        "education", "educational", "teaching", "classroom", "classrooms", "pedagogy", 
+        "e-learning", "edtech", "school", "schools", "instructional"
+    ],
+    "Innovation & Entrepreneurship": [
+        "startup", "startups", "venture", "ventures", "pitch", "pitching", "investor", 
+        "investors", "entrepreneur", "entrepreneurship", "prototype", "funding"
+    ],
+    "Media and Communication Technology": [
+        "media", "video", "graphics", "journalism", "broadcasting", "content", 
+        "multimedia", "streaming", "audio"
+    ]
 }
 
 def clean_scraped_text(text: str) -> str:
@@ -85,18 +118,25 @@ def load_and_embed_majors():
     if not major_texts:
         return [], [], {}
 
-    # FIXED: Utilizes get_cached_embeddings to eliminate redundant processing
     major_embeddings = get_cached_embeddings(major_texts)
     return major_names, major_embeddings, major_docs
 
 def calculate_keyword_boost(user_text: str, major_name: str) -> float:
-    keywords = MAJOR_KEYWORDS.get(major_name, [])
-    if not keywords:
-        return 0.0
-    
     user_text_lower = user_text.lower()
-    matches = sum(1 for kw in keywords if re.search(r'\b' + re.escape(kw) + r'\b', user_text_lower))
-    return min(matches * 0.05, 0.15)
+    major_lower = major_name.lower()
+    boost = 0.0
+
+    # OPTIMIZATION 1: Direct title match boost (+0.35)
+    if major_lower in user_text_lower:
+        boost += 0.35
+
+    # OPTIMIZATION 2: Increased keyword weight (from 0.08 to 0.10 per match, capped at 0.40)
+    keywords = MAJOR_KEYWORDS.get(major_name, [])
+    if keywords:
+        matches = sum(1 for kw in keywords if re.search(r'\b' + re.escape(kw) + r'\b', user_text_lower))
+        boost += min(matches * 0.10, 0.40)
+
+    return boost
 
 def rank_majors(user_profile_text: str, top_k: int = 3) -> list:
     major_names, major_embeddings, major_docs = load_and_embed_majors()

@@ -1,3 +1,5 @@
+# Script to inspect the SQLite database to display real time logs of stored messages and recommendation analytics for debugging and evaluation purposes.
+
 import sqlite3
 
 DB_PATH = "chat_history.db"

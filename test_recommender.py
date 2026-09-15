@@ -1,3 +1,5 @@
+# Test script for the recommendation engine
+
 from recommendation_engine import rank_majors
 
 # Example student input aggregating interests from past chat turns

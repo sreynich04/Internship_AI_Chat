@@ -1,65 +1,94 @@
+import os
 import sqlite3
+import libsql
+from dotenv import load_dotenv
 
-DB_PATH = "chat_history.db"
+load_dotenv()
+
+TURSO_URL = os.getenv("TURSO_DATABASE_URL")
+TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
+
+def get_connection():
+    """Connects to Turso cloud database or falls back to local SQLite."""
+    if TURSO_URL and TURSO_TOKEN:
+        return libsql.connect(database=TURSO_URL, auth_token=TURSO_TOKEN)
+    else:
+        conn = sqlite3.connect("analytics.db")
+        conn.execute("PRAGMA journal_mode=WAL;")
+        return conn
 
 def init_db():
-    """Initializes message history, recommendation logs, and feedback tables."""
-    with sqlite3.connect(DB_PATH) as conn:
-        # Chat History Table
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        
-        # Recommendation Analytics Table (For Defense Data & Metrics)
+    """Initializes the recommendation logs and chat history schemas."""
+    try:
+        conn = get_connection()
         conn.execute("""
             CREATE TABLE IF NOT EXISTS recommendation_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                user_persona TEXT NOT NULL,
-                recommended_major TEXT NOT NULL,
-                match_score REAL NOT NULL,
-                mode TEXT NOT NULL, -- 'DISCOVERY' or 'RECOMMENDATION'
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                session_id TEXT,
+                user_persona TEXT,
+                top_major TEXT,
+                top_score REAL,
+                mode TEXT
             )
         """)
-
-def save_to_history_file(session_id: str, user_message: str, ai_response: str):
-    """Saves user message and AI response."""
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            "INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",
-            (session_id, "user", user_message)
-        )
-        conn.execute(
-            "INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",
-            (session_id, "assistant", ai_response)
-        )
-
-def log_recommendation(session_id: str, persona: str, major: str, score: float, mode: str):
-    """Logs recommendation decisions for model evaluation and dashboard reporting."""
-    with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
-            INSERT INTO recommendation_logs (session_id, user_persona, recommended_major, match_score, mode)
-            VALUES (?, ?, ?, ?, ?)
-        """, (session_id, persona, major, score, mode))
+            CREATE TABLE IF NOT EXISTS chat_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                role TEXT,
+                content TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        conn.close()
+        print("✅ Database successfully connected & initialized in Turso Cloud.")
+    except Exception as e:
+        print(f"❌ Database Initialization Error: {e}")
 
-def get_history(session_id: str, limit: int = 20) -> list:
-    """Loads recent messages in chronological order."""
-    with sqlite3.connect(DB_PATH) as conn:
+def log_recommendation(session_id, user_persona, top_major, top_score, mode):
+    """Logs recommendation metrics to the central database."""
+    try:
+        conn = get_connection()
+        conn.execute("""
+            INSERT INTO recommendation_logs (session_id, user_persona, top_major, top_score, mode)
+            VALUES (?, ?, ?, ?, ?)
+        """, (str(session_id), user_persona, top_major, top_score, mode))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error logging recommendation: {e}")
+
+def save_to_history_file(session_id, role, content):
+    """Saves a conversation turn to chat history in Turso."""
+    try:
+        conn = get_connection()
+        conn.execute("""
+            INSERT INTO chat_history (session_id, role, content)
+            VALUES (?, ?, ?)
+        """, (str(session_id), role, content))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error saving chat history: {e}")
+
+def get_history(session_id):
+    """Retrieves stored conversation history for a specific session."""
+    try:
+        conn = get_connection()
         cursor = conn.cursor()
-        rows = cursor.execute("""
-            SELECT role, content FROM (
-                SELECT id, role, content FROM messages
-                WHERE session_id = ?
-                ORDER BY id DESC
-                LIMIT ?
-            ) ORDER BY id ASC
-        """, (session_id, limit)).fetchall()
-        
-        return [{"role": r[0], "content": r[1]} for r in rows]
+        cursor.execute("""
+            SELECT role, content FROM chat_history
+            WHERE session_id = ?
+            ORDER BY id ASC
+        """, (str(session_id),))
+        rows = cursor.fetchall()
+        conn.close()
+        return [{"role": row[0], "content": row[1]} for row in rows]
+    except Exception as e:
+        print(f"Error retrieving history: {e}")
+        return []
+
+if __name__ == "__main__":
+    init_db()

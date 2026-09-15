@@ -1,3 +1,6 @@
+#base model evaluation script to test the chatbot's response accuracy and refusal handling against predefined test cases.
+
+
 import pytest
 import time
 import os

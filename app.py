@@ -1,4 +1,5 @@
 import os
+import re
 from groq import Groq  
 from flask import Flask, request, jsonify, send_from_directory
 from dotenv import load_dotenv
@@ -18,8 +19,11 @@ init_db()
 
 client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
+
 def sanitize_khmer_text(text: str) -> str:
     """Replaces hallucinated Thai tokens with standard Khmer terminology."""
+    if not text:
+        return ""
     thai_to_khmer_map = {
         "หลักสูตร": "កម្មវិធីសិក្សា",
         "มหาวิทยาลัย": "សាកលវិទ្យាល័យ",
@@ -28,92 +32,154 @@ def sanitize_khmer_text(text: str) -> str:
     }
     for thai_word, khmer_word in thai_to_khmer_map.items():
         text = text.replace(thai_word, khmer_word)
-    return text
+    return text.strip()
+
 
 def load_knowledge_base(user_message):
-    """Loads specific file based on keywords for general administrative FAQs."""
+    """
+    Content & Intent-Aware Retriever:
+    Scans filenames and file contents to retrieve comprehensive context for any 
+    academic, administrative, facility, tuition, or general inquiry.
+    """
     if not os.path.exists(KNOWLEDGE_DIR):
         return "Knowledge base unavailable."
 
     user_msg_lower = user_message.lower()
+    query_tokens = set(re.findall(r'\b\w{3,}\b', user_msg_lower))
+    
+    # Removed "where" from stop_words so location queries match properly
+    stop_words = {"camtech", "university", "about", "what", "how", "can", "does", "have", "with", "from", "that", "this", "tell", "know", "want"}
+    filtered_tokens = query_tokens - stop_words
 
-    file_routing = {
-        "How to Apply": ["apply", "admission", "application", "ស្នើសុំ", "ចុះឈ្មោះ"],
-        "Jobs": ["job", "career", "hiring", "employment", "ការងារ"],
-        "Masters and PhD Programs": ["master", "phd", "graduate program", "postgraduate"],
-        "Publications": ["publication", "paper", "journal", "research output"],
-        "Why CamTech": ["why", "about", "facility", "scholarship", "employability", "អាហារូបករណ៍"],
-        "Industrial Partner": ["partner", "industry partner", "collaboration"],
-        "Industry-Linkage": ["linkage", "industry link"],
-        "News Events - CamTech University": ["news", "event", "events"],
-        "SCHOOL OF CONTINUING EDUCATION": ["continuing education", "short course"],
-        "SeminarsConferences": ["seminar", "conference"],
-        "Student Exchange Programs": ["exchange", "study abroad"],
-        "University School Collaboration": ["school collaboration", "high school"],
-    }
+    all_files = [f for f in os.listdir(KNOWLEDGE_DIR) if f.endswith(".txt")]
+    file_scores = {}
 
-    selected_files = []
-    for filename, keywords in file_routing.items():
-        if any(keyword in user_msg_lower for keyword in keywords):
-            selected_files.append(filename)
+    for file_name in all_files:
+        file_path = os.path.join(KNOWLEDGE_DIR, file_name)
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                content_lower = content.lower()
 
-    if selected_files:
-        combined_text = []
-        for file_name in selected_files:
-            file_path = os.path.join(KNOWLEDGE_DIR, f"{file_name}.txt")
-            if os.path.exists(file_path):
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    combined_text.append(f"--- {file_name} ---\n{f.read()}")
-        if combined_text:
-            return "\n\n".join(combined_text)
+                score = 0
+                for token in filtered_tokens:
+                    if token in file_name.lower():
+                        score += 5
+                    score += content_lower.count(token)
 
-    default_path = os.path.join(KNOWLEDGE_DIR, "Why CamTech.txt")
-    if os.path.exists(default_path):
-        with open(default_path, 'r', encoding='utf-8') as f:
-            return f"--- Why CamTech ---\n{f.read()}"
+                # Intent 1: Program & Fee Queries
+                if any(k in user_msg_lower for k in ["major", "majors", "program", "programs", "undergraduate", "bachelor", "bachelors", "degree", "tuition", "fee", "cost", "price"]):
+                    if "bachelor" in file_name.lower():
+                        score += 10
 
-    return "General CamTech University information."
+                # Intent 2: Campus, Location & Address Queries (FIXED)
+                if any(k in user_msg_lower for k in ["location", "located", "where", "address", "map", "contact"]):
+                    # Boost files containing location data
+                    if any(x in content_lower for x in ["chroy chongvar", "phnom penh", "street", "location", "address"]):
+                        score += 15
+
+                # Intent 3: Facilities, Labs & Scholarships Queries (FIXED)
+                if any(k in user_msg_lower for k in ["facility", "facilities", "lab", "labs", "maker", "scholarship", "campus"]):
+                    if any(x in file_name.lower() for x in ["why", "campus", "prospectus", "bachelor"]) or "lab" in content_lower:
+                        score += 10
+
+                # Baseline weight for primary prospectus file
+                if "bachelor" in file_name.lower():
+                    score += 2
+
+                file_scores[file_name] = (score, content)
+        except Exception as e:
+            print(f"Error reading {file_name}: {e}")
+
+    sorted_files = sorted(file_scores.items(), key=lambda x: x[1][0], reverse=True)
+
+    selected_contents = []
+    total_chars = 0
+    MAX_CHAR_BUDGET = 8500
+
+    for file_name, (score, content) in sorted_files:
+        if total_chars >= MAX_CHAR_BUDGET:
+            break
+        
+        # Increased character limit to 7,500 to prevent truncating contact/address footers
+        char_limit = 7500 if "bachelor" in file_name.lower() else 3000
+        truncated_content = content[:char_limit].strip()
+        
+        selected_contents.append(f"--- DOCUMENT: {file_name} ---\n{truncated_content}")
+        total_chars += len(truncated_content)
+
+    return "\n\n".join(selected_contents)
 
 def load_mcp_prompt():
     """Reads the system prompt from an external text file."""
     if os.path.exists(MCP_PROMPT_FILE):
         with open(MCP_PROMPT_FILE, 'r', encoding='utf-8') as f:
             return f.read()
-    return "You are a helpful academic recommendation assistant for CamTech University."
+    return "You are UniGuide, the official AI Advisory Assistant for CamTech University in Phnom Penh, Cambodia."
+
 
 # --- CORE LOGIC ---
 def generate_response(user_message, history, session_id="session_default"):
     if not client:
         return "Error: Groq API Key not found."
 
+    # 1. Instant Interceptor for Simple Greetings
+    clean_msg = user_message.strip().lower().strip("!.,?")
+    greetings_list = ["hi", "hello", "hey", "good morning", "good afternoon", "greetings", "suostei"]
+    if clean_msg in greetings_list:
+        return (
+            "👋 Hello! Welcome to CamTech University's AI Advisory Assistant.\n\n"
+            "I can help you with:\n"
+            "• Undergraduate Majors & Degree Programs\n"
+            "• Tuition Fees, Scholarships & Admissions\n"
+            "• Campus Facilities, Labs & Student Life\n"
+            "• Career Pathways & Major Recommendations\n\n"
+            "How can I assist you today? Feel free to ask a question or tell me about your career goals!"
+        )
+
     system_prompt = load_mcp_prompt()
     general_knowledge = load_knowledge_base(user_message)
 
-    # 1. Aggregate past history to form full user persona vector
+    # 2. Vector Ranking & Persona Aggregation
     past_user_messages = [msg.get("content", "") for msg in history if msg.get("role") == "user"]
     past_user_messages.append(user_message)
     aggregated_user_persona = " ".join(past_user_messages)
 
-    # 2. Compute similarity & ranking
     vector_results = rank_majors(aggregated_user_persona, top_k=2)
 
     top_major = vector_results[0]['major'] if vector_results else "None"
     top_score = vector_results[0]['similarity_score'] if vector_results else 0.0
     mode = "DISCOVERY" if top_score < 35.0 else "RECOMMENDATION"
 
-    # 3. CALL LOGGER: Log analytics to SQLite database
     log_recommendation(session_id, aggregated_user_persona, top_major, top_score, mode)
 
-    # 4. Dynamic Prompting based on Confidence Threshold
+    # 3. Dynamic Mode Instructions
     if mode == "DISCOVERY":
         ml_decision_context = f"""
         CONFIDENCE STATUS: LOW ({top_score:.2f}%)
         Top Preliminary Signals: {[r['major'] for r in vector_results]}
         
         INSTRUCTIONS FOR ASSISTANT:
-        1. Do NOT make a definitive major recommendation yet.
-        2. Acknowledge their interest naturally.
-        3. Ask 1-2 brief follow-up questions to gather more details.
+        1. DIRECT GENERAL & ADMINISTRATIVE QUESTIONS (Tuition, Facilities, Admissions, Contacts, Campus Info):
+           - Answer directly, completely, and accurately using the provided GENERAL FAQ CONTEXT.
+           - Do NOT refuse to answer if relevant details exist anywhere in the context.
+
+        2. EXHAUSTIVE LISTING RULE FOR MAJORS/PROGRAMS:
+           - When asked about available undergraduate majors or programs, you MUST list ALL 10 majors present in the context without omitting any:
+             1. AI and Data Science
+             2. Architecture
+             3. Risk Management and Business Intelligence
+             4. Cyber Security
+             5. Robotics and AI / Automation Engineering
+             6. Software Engineering
+             7. Interior Design
+             8. Educational Technology
+             9. Innovation & Entrepreneurship
+             10. Media and Communication Technology
+
+        3. PROFILE DISCOVERY (When user shares personal interests or vague career goals):
+           - Do NOT make a definitive major recommendation yet.
+           - Acknowledge their interest naturally and ask 1-2 brief follow-up questions to gather more details.
         """
     else:
         rank_1_name = vector_results[0]['major']
@@ -130,27 +196,51 @@ def generate_response(user_message, history, session_id="session_default"):
         {rank_2_str}
 
         STRICT FORMATTING RULE:
-        Whenever you mention a recommended major, you MUST explicitly write the match percentage next to the title using this exact structure:
+        Whenever you recommend a major, explicitly display the match confidence score:
         **[Major Name]** – *Match Confidence: [Score]%*
-
-        Example:
-        **AI and Data Science** – *Match Confidence: {rank_1_score}%*
         """
 
+   # 4. Master Prompt Matrix (Applies globally regardless of mode)
     full_system_prompt = f"""{system_prompt}
 
 {ml_decision_context}
 
+CRITICAL RESPONSE GUIDELINES:
+1. EXHAUSTIVE MAJORS RULE: Whenever the user asks to see available majors, undergraduate programs, or faculties, you MUST explicitly list ALL 10 degree programs below without omitting or summarizing any:
+   1. AI and Data Science
+   2. Architecture
+   3. Risk Management and Business Intelligence
+   4. Cyber Security
+   5. Robotics and Automation Engineering
+   6. Software Engineering
+   7. Interior Design
+   8. Educational Technology
+   9. Innovation & Entrepreneurship
+   10. Media and Communication Technology
+
+2. INSTITUTIONAL BASELINE FACTS (NEVER REFUSE THESE):
+   - Location: CamTech University campus is located in Chroy Chongvar Satellite City, Phnom Penh, Cambodia.
+   - Scholarships: CamTech offers merit-based and need-based scholarships (up to 100%) based on National High School Exam results, academic standing, and CamTech entrance exams.
+   - Tuition Rates: Undergraduate tuition ranges between $3,500 and $4,000 per year ($14,000 to $16,000 total for 4 years). Use this standard rate whenever asked about fees for any major.
+
+3. NON-EXISTENT PROGRAMS: CamTech DOES NOT offer Civil, Mechanical, or general Electrical Engineering, Medicine, Nursing, or Law. Explicitly state they are not offered and direct users to existing related majors (e.g., Architecture, Robotics & Automation Engineering, Risk Management).
+
+4. MULTI-PART QUESTIONS: Address EVERY component of a multi-topic query (e.g., tuition + location + scholarships + facilities) in a single structured response.
+
+5. NEVER REFUSE VALID INSTITUTIONAL DATA: Do NOT say "I don't have that exact information" when asked about location, scholarships, tuition, contacts, or facilities. Rely on the baseline facts above and the GENERAL FAQ CONTEXT below.
 --- GENERAL FAQ CONTEXT ---
 {general_knowledge}
 """
 
+    # Replace lines 177-184 with this strict role sanitizer:
     messages = [{"role": "system", "content": full_system_prompt}]
-
     for msg in history:
-        role = msg.get("role", "user")
-        if role in ["bot", "model"]:
+        raw_role = str(msg.get("role", "")).lower().strip()
+        if raw_role in ["bot", "model", "assistant"]:
             role = "assistant"
+        else:
+            role = "user"
+            
         content = msg.get("content") or msg.get("message") or ""
         if content:
             messages.append({"role": role, "content": content})
@@ -161,7 +251,7 @@ def generate_response(user_message, history, session_id="session_default"):
         completion = client.chat.completions.create(
             model="openai/gpt-oss-120b",
             messages=messages,
-            temperature=0.6,
+            temperature=0.3,
             max_tokens=1000
         )
         raw_output = completion.choices[0].message.content
@@ -169,10 +259,12 @@ def generate_response(user_message, history, session_id="session_default"):
     except Exception as e:
         return f"Advisory Error: {str(e)}"
 
+
 # --- ROUTES ---
 @app.route('/', methods=['GET'])
 def serve_frontend():
     return send_from_directory('.', 'index.html')
+
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
@@ -190,7 +282,10 @@ def chat():
         return jsonify({'error': 'GROQ_API_KEY is not configured.'}), 500
 
     answer = generate_response(user_message, chat_history, session_id)
-    save_to_history_file(session_id, user_message, answer)
+    
+    # FIX: Save user message and assistant message separately with explicit roles
+    save_to_history_file(session_id, "user", user_message)
+    save_to_history_file(session_id, "assistant", answer)
 
     return jsonify({'response': answer})
 

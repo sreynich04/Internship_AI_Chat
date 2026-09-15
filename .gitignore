@@ -6,6 +6,8 @@
 venv/
 
 # Local databases & model caches
+*.db
+analytics.db
 chat_history.db
 chat_history.json
 embeddings_cache.npy
