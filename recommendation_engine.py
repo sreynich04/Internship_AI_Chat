@@ -1,10 +1,19 @@
 import os
 import re
 import numpy as np
-from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 
-embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+# --- LAZY MODEL LOADING ---
+_embedding_model = None
+
+def get_embedding_model():
+    """Initializes and returns the SentenceTransformer model on demand."""
+    global _embedding_model
+    if _embedding_model is None:
+        from sentence_transformers import SentenceTransformer
+        _embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+    return _embedding_model
+
 KNOWLEDGE_DIR = "knowledge_base"
 CACHE_FILE = "embeddings_cache.npy"
 
@@ -96,7 +105,8 @@ def get_cached_embeddings(major_texts: list):
         except Exception:
             pass
     
-    embeddings = embedding_model.encode(major_texts)
+    model = get_embedding_model()
+    embeddings = model.encode(major_texts)
     np.save(CACHE_FILE, embeddings)
     return embeddings
 
@@ -130,7 +140,7 @@ def calculate_keyword_boost(user_text: str, major_name: str) -> float:
     if major_lower in user_text_lower:
         boost += 0.35
 
-    # OPTIMIZATION 2: Increased keyword weight (from 0.08 to 0.10 per match, capped at 0.40)
+    # OPTIMIZATION 2: Keyword weight (0.10 per match, capped at 0.40)
     keywords = MAJOR_KEYWORDS.get(major_name, [])
     if keywords:
         matches = sum(1 for kw in keywords if re.search(r'\b' + re.escape(kw) + r'\b', user_text_lower))
@@ -144,7 +154,8 @@ def rank_majors(user_profile_text: str, top_k: int = 3) -> list:
     if len(major_names) == 0:
         return []
 
-    user_vector = embedding_model.encode([user_profile_text])
+    model = get_embedding_model()
+    user_vector = model.encode([user_profile_text])
     cosine_scores = cosine_similarity(user_vector, major_embeddings)[0]
 
     final_scores = []
