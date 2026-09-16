@@ -1,21 +1,34 @@
 import os
 import re
 import numpy as np
+import requests
 from sklearn.metrics.pairwise import cosine_similarity
-
-# --- LAZY MODEL LOADING ---
-_embedding_model = None
-
-def get_embedding_model():
-    """Initializes and returns the SentenceTransformer model on demand."""
-    global _embedding_model
-    if _embedding_model is None:
-        from sentence_transformers import SentenceTransformer
-        _embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-    return _embedding_model
 
 KNOWLEDGE_DIR = "knowledge_base"
 CACHE_FILE = "embeddings_cache.npy"
+
+# --- HUGGING FACE INFERENCE API ---
+HF_API_URL = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
+HF_TOKEN = os.getenv("HF_TOKEN", "")
+
+def query_hf_embeddings(texts: list) -> np.ndarray:
+    """Fetches vector embeddings remotely via Hugging Face API (0MB local RAM)."""
+    headers = {}
+    if HF_TOKEN:
+        headers["Authorization"] = f"Bearer {HF_TOKEN}"
+
+    response = requests.post(
+        HF_API_URL, 
+        headers=headers, 
+        json={"inputs": texts, "options": {"wait_for_model": True}},
+        timeout=10
+    )
+    
+    if response.status_code == 200:
+        return np.array(response.json())
+    else:
+        print(f"HF API Error {response.status_code}: {response.text}")
+        return np.zeros((len(texts), 384))
 
 KNOWN_MAJORS = [
     "AI and Data Science",
@@ -96,7 +109,7 @@ def extract_majors_from_text(file_content: str) -> dict:
     return extracted
 
 def get_cached_embeddings(major_texts: list):
-    """Loads embeddings from disk if available and valid; otherwise encodes and saves."""
+    """Loads embeddings from disk if available and valid; otherwise fetches remotely and saves."""
     if os.path.exists(CACHE_FILE):
         try:
             cached = np.load(CACHE_FILE)
@@ -105,8 +118,7 @@ def get_cached_embeddings(major_texts: list):
         except Exception:
             pass
     
-    model = get_embedding_model()
-    embeddings = model.encode(major_texts)
+    embeddings = query_hf_embeddings(major_texts)
     np.save(CACHE_FILE, embeddings)
     return embeddings
 
@@ -154,8 +166,7 @@ def rank_majors(user_profile_text: str, top_k: int = 3) -> list:
     if len(major_names) == 0:
         return []
 
-    model = get_embedding_model()
-    user_vector = model.encode([user_profile_text])
+    user_vector = query_hf_embeddings([user_profile_text])
     cosine_scores = cosine_similarity(user_vector, major_embeddings)[0]
 
     final_scores = []
