@@ -11,14 +11,15 @@ CACHE_FILE = "embeddings_cache.npy"
 HF_TOKEN = os.getenv("HF_TOKEN", "")
 
 def query_hf_embeddings(texts: list) -> np.ndarray:
-    """Fetches vector embeddings remotely via Hugging Face API with 3D -> 2D mean pooling."""
+    """Fetches vector embeddings remotely with full safety checks for non-list JSON responses."""
     headers = {}
     if HF_TOKEN:
         headers["Authorization"] = f"Bearer {HF_TOKEN}"
 
+    # Priority order of Hugging Face inference endpoints
     urls = [
-        "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction",
-        "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
+        "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2",
+        "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
     ]
 
     for url in urls:
@@ -27,25 +28,34 @@ def query_hf_embeddings(texts: list) -> np.ndarray:
                 url, 
                 headers=headers, 
                 json={"inputs": texts, "options": {"wait_for_model": True}},
-                timeout=10
+                timeout=8
             )
+            
             if response.status_code == 200:
-                data = np.array(response.json())
+                res_json = response.json()
                 
-                # Convert 3D token matrix (batch, tokens, 384) to 2D sentence vector (batch, 384)
+                # Check if HF returned an error dictionary instead of numerical vectors
+                if isinstance(res_json, dict):
+                    print(f"HF API returned dictionary/error: {res_json}")
+                    continue
+                
+                data = np.array(res_json, dtype=np.float32)
+                
+                # Handle 3D token arrays: mean pool to 2D (batch_size, 384)
                 if data.ndim == 3:
                     data = np.mean(data, axis=1)
                 elif data.ndim == 1:
                     data = np.expand_dims(data, axis=0)
 
-                return data
+                if data.ndim == 2 and data.shape[1] == 384:
+                    return data
             else:
-                print(f"HF API Status {response.status_code} on {url}: {response.text}")
+                print(f"HF API Error {response.status_code} on {url}: {response.text}")
         except Exception as e:
-            print(f"HF API Request Exception on {url}: {e}")
+            print(f"HF API Exception on {url}: {e}")
 
-    # Fallback zero-vector if HF endpoints are unreachable
-    return np.zeros((len(texts), 384))
+    # Fail-safe zero matrix fallback to prevent Flask 500 crashes
+    return np.zeros((len(texts), 384), dtype=np.float32)
 
 KNOWN_MAJORS = [
     "AI and Data Science",
@@ -135,7 +145,8 @@ def get_cached_embeddings(major_texts: list):
             pass
     
     embeddings = query_hf_embeddings(major_texts)
-    np.save(CACHE_FILE, embeddings)
+    if np.any(embeddings):
+        np.save(CACHE_FILE, embeddings)
     return embeddings
 
 def load_and_embed_majors():
@@ -154,7 +165,7 @@ def load_and_embed_majors():
                 major_docs[name] = text
 
     if not major_texts:
-        return [], [], {}
+        return [], np.array([]), {}
 
     major_embeddings = get_cached_embeddings(major_texts)
     return major_names, major_embeddings, major_docs
@@ -175,36 +186,44 @@ def calculate_keyword_boost(user_text: str, major_name: str) -> float:
     return boost
 
 def rank_majors(user_profile_text: str, top_k: int = 3) -> list:
-    major_names, major_embeddings, major_docs = load_and_embed_majors()
+    try:
+        major_names, major_embeddings, major_docs = load_and_embed_majors()
 
-    if len(major_names) == 0:
+        if len(major_names) == 0:
+            return []
+
+        user_vector = query_hf_embeddings([user_profile_text])
+        
+        # Ensure matrix dimensions align properly
+        if user_vector.ndim == 3:
+            user_vector = np.mean(user_vector, axis=1)
+        if major_embeddings.ndim == 3:
+            major_embeddings = np.mean(major_embeddings, axis=1)
+
+        # Calculate cosine similarity if vectors exist, otherwise default to keyword ranking
+        if user_vector.ndim == 2 and major_embeddings.ndim == 2 and user_vector.shape[1] == major_embeddings.shape[1]:
+            cosine_scores = cosine_similarity(user_vector, major_embeddings)[0]
+        else:
+            cosine_scores = np.zeros(len(major_names))
+
+        final_scores = []
+        for idx, major in enumerate(major_names):
+            base_score = float(cosine_scores[idx])
+            boost = calculate_keyword_boost(user_profile_text, major)
+            combined_score = min(base_score + boost, 1.0)
+            final_scores.append(combined_score)
+
+        ranked_indices = np.argsort(final_scores)[::-1]
+
+        results = []
+        for idx in ranked_indices[:top_k]:
+            results.append({
+                "major": major_names[idx],
+                "similarity_score": round(final_scores[idx] * 100, 2),
+                "content": major_docs[major_names[idx]]
+            })
+
+        return results
+    except Exception as e:
+        print(f"Error inside rank_majors: {e}")
         return []
-
-    user_vector = query_hf_embeddings([user_profile_text])
-    
-    # Ensure dimensions match before running cosine similarity
-    if user_vector.ndim == 3:
-        user_vector = np.mean(user_vector, axis=1)
-    if major_embeddings.ndim == 3:
-        major_embeddings = np.mean(major_embeddings, axis=1)
-
-    cosine_scores = cosine_similarity(user_vector, major_embeddings)[0]
-
-    final_scores = []
-    for idx, major in enumerate(major_names):
-        base_score = float(cosine_scores[idx])
-        boost = calculate_keyword_boost(user_profile_text, major)
-        combined_score = min(base_score + boost, 1.0)
-        final_scores.append(combined_score)
-
-    ranked_indices = np.argsort(final_scores)[::-1]
-
-    results = []
-    for idx in ranked_indices[:top_k]:
-        results.append({
-            "major": major_names[idx],
-            "similarity_score": round(final_scores[idx] * 100, 2),
-            "content": major_docs[major_names[idx]]
-        })
-
-    return results
