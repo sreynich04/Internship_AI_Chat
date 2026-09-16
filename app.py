@@ -1,5 +1,6 @@
 import os
 import re
+import requests
 from groq import Groq  
 from flask import Flask, request, jsonify, send_from_directory
 from dotenv import load_dotenv
@@ -10,6 +11,7 @@ load_dotenv()
 
 # --- CONFIGURATION ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 PORT = int(os.getenv("PORT") or 7860)
 MCP_PROMPT_FILE = "mcp_prompt.txt"
 KNOWLEDGE_DIR = "knowledge_base"
@@ -27,7 +29,7 @@ def sanitize_khmer_text(text: str) -> str:
     thai_to_khmer_map = {
         "หลักสูตร": "កម្មវិធីសិក្សា",
         "มหาวิทยาลัย": "សាកលវិទ្យាល័យ",
-        "วิชา": "មុខវិជ្ជា",
+        "วิชา": "មុខวิជ្ជា",
         "สมัคร": "ចុះឈ្មោះ",
     }
     for thai_word, khmer_word in thai_to_khmer_map.items():
@@ -47,7 +49,6 @@ def load_knowledge_base(user_message):
     user_msg_lower = user_message.lower()
     query_tokens = set(re.findall(r'\b\w{3,}\b', user_msg_lower))
     
-    # Removed "where" from stop_words so location queries match properly
     stop_words = {"camtech", "university", "about", "what", "how", "can", "does", "have", "with", "from", "that", "this", "tell", "know", "want"}
     filtered_tokens = query_tokens - stop_words
 
@@ -72,13 +73,12 @@ def load_knowledge_base(user_message):
                     if "bachelor" in file_name.lower():
                         score += 10
 
-                # Intent 2: Campus, Location & Address Queries (FIXED)
+                # Intent 2: Campus, Location & Address Queries
                 if any(k in user_msg_lower for k in ["location", "located", "where", "address", "map", "contact"]):
-                    # Boost files containing location data
                     if any(x in content_lower for x in ["chroy chongvar", "phnom penh", "street", "location", "address"]):
                         score += 15
 
-                # Intent 3: Facilities, Labs & Scholarships Queries (FIXED)
+                # Intent 3: Facilities, Labs & Scholarships Queries
                 if any(k in user_msg_lower for k in ["facility", "facilities", "lab", "labs", "maker", "scholarship", "campus"]):
                     if any(x in file_name.lower() for x in ["why", "campus", "prospectus", "bachelor"]) or "lab" in content_lower:
                         score += 10
@@ -101,7 +101,6 @@ def load_knowledge_base(user_message):
         if total_chars >= MAX_CHAR_BUDGET:
             break
         
-        # Increased character limit to 7,500 to prevent truncating contact/address footers
         char_limit = 7500 if "bachelor" in file_name.lower() else 3000
         truncated_content = content[:char_limit].strip()
         
@@ -109,6 +108,7 @@ def load_knowledge_base(user_message):
         total_chars += len(truncated_content)
 
     return "\n\n".join(selected_contents)
+
 
 def load_mcp_prompt():
     """Reads the system prompt from an external text file."""
@@ -200,7 +200,7 @@ def generate_response(user_message, history, session_id="session_default"):
         **[Major Name]** – *Match Confidence: [Score]%*
         """
 
-   # 4. Master Prompt Matrix (Applies globally regardless of mode)
+    # 4. Master Prompt Matrix
     full_system_prompt = f"""{system_prompt}
 
 {ml_decision_context}
@@ -232,15 +232,10 @@ CRITICAL RESPONSE GUIDELINES:
 {general_knowledge}
 """
 
-    # Replace lines 177-184 with this strict role sanitizer:
     messages = [{"role": "system", "content": full_system_prompt}]
     for msg in history:
         raw_role = str(msg.get("role", "")).lower().strip()
-        if raw_role in ["bot", "model", "assistant"]:
-            role = "assistant"
-        else:
-            role = "user"
-            
+        role = "assistant" if raw_role in ["bot", "model", "assistant"] else "user"
         content = msg.get("content") or msg.get("message") or ""
         if content:
             messages.append({"role": role, "content": content})
@@ -283,11 +278,39 @@ def chat():
 
     answer = generate_response(user_message, chat_history, session_id)
     
-    # FIX: Save user message and assistant message separately with explicit roles
     save_to_history_file(session_id, "user", user_message)
     save_to_history_file(session_id, "assistant", answer)
 
     return jsonify({'response': answer})
+
+
+@app.route('/telegram', methods=['POST'])
+def telegram_webhook():
+    payload = request.get_json(silent=True) or {}
+    
+    if "message" in payload:
+        message = payload["message"]
+        chat_id = str(message["chat"]["id"])
+        user_text = message.get("text", "")
+
+        if user_text:
+            # 1. Fetch user history from Turso using Telegram chat_id
+            history = get_history(chat_id)
+
+            # 2. Generate response using central AI logic
+            bot_reply = generate_response(user_text, history, session_id=chat_id)
+
+            # 3. Save conversation history
+            save_to_history_file(chat_id, "user", user_text)
+            save_to_history_file(chat_id, "assistant", bot_reply)
+
+            # 4. Post response back to Telegram
+            if TELEGRAM_BOT_TOKEN:
+                telegram_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+                requests.post(telegram_url, json={"chat_id": chat_id, "text": bot_reply})
+
+    return "OK", 200
+
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 7860))
