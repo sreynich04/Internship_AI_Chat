@@ -8,3 +8,4 @@ seaborn
 libsql
 gunicorn
 groq
+flask
