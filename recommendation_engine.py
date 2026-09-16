@@ -8,27 +8,44 @@ KNOWLEDGE_DIR = "knowledge_base"
 CACHE_FILE = "embeddings_cache.npy"
 
 # --- HUGGING FACE INFERENCE API ---
-HF_API_URL = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
 HF_TOKEN = os.getenv("HF_TOKEN", "")
 
 def query_hf_embeddings(texts: list) -> np.ndarray:
-    """Fetches vector embeddings remotely via Hugging Face API (0MB local RAM)."""
+    """Fetches vector embeddings remotely via Hugging Face API with 3D -> 2D mean pooling."""
     headers = {}
     if HF_TOKEN:
         headers["Authorization"] = f"Bearer {HF_TOKEN}"
 
-    response = requests.post(
-        HF_API_URL, 
-        headers=headers, 
-        json={"inputs": texts, "options": {"wait_for_model": True}},
-        timeout=10
-    )
-    
-    if response.status_code == 200:
-        return np.array(response.json())
-    else:
-        print(f"HF API Error {response.status_code}: {response.text}")
-        return np.zeros((len(texts), 384))
+    urls = [
+        "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction",
+        "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
+    ]
+
+    for url in urls:
+        try:
+            response = requests.post(
+                url, 
+                headers=headers, 
+                json={"inputs": texts, "options": {"wait_for_model": True}},
+                timeout=10
+            )
+            if response.status_code == 200:
+                data = np.array(response.json())
+                
+                # Convert 3D token matrix (batch, tokens, 384) to 2D sentence vector (batch, 384)
+                if data.ndim == 3:
+                    data = np.mean(data, axis=1)
+                elif data.ndim == 1:
+                    data = np.expand_dims(data, axis=0)
+
+                return data
+            else:
+                print(f"HF API Status {response.status_code} on {url}: {response.text}")
+        except Exception as e:
+            print(f"HF API Request Exception on {url}: {e}")
+
+    # Fallback zero-vector if HF endpoints are unreachable
+    return np.zeros((len(texts), 384))
 
 KNOWN_MAJORS = [
     "AI and Data Science",
@@ -43,7 +60,6 @@ KNOWN_MAJORS = [
     "Media and Communication Technology"
 ]
 
-# Updated MAJOR_KEYWORDS using distinct single words and variations
 MAJOR_KEYWORDS = {
     "Software Engineering": [
         "code", "coding", "program", "programming", "software", "developer", "fullstack", 
@@ -88,7 +104,6 @@ MAJOR_KEYWORDS = {
 }
 
 def clean_scraped_text(text: str) -> str:
-    """Strips URLs, navigation headers, and web scraping noise."""
     text = re.sub(r'https?://\S+|www\.\S+', '', text)
     text = re.sub(r'(Home|Bachelor\'s Programs|CamTech University|For more details)', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\s+', ' ', text).strip()
@@ -109,11 +124,12 @@ def extract_majors_from_text(file_content: str) -> dict:
     return extracted
 
 def get_cached_embeddings(major_texts: list):
-    """Loads embeddings from disk if available and valid; otherwise fetches remotely and saves."""
     if os.path.exists(CACHE_FILE):
         try:
             cached = np.load(CACHE_FILE)
-            if len(cached) == len(major_texts):
+            if cached.ndim == 3:
+                cached = np.mean(cached, axis=1)
+            if len(cached) == len(major_texts) and cached.ndim == 2:
                 return cached
         except Exception:
             pass
@@ -148,11 +164,9 @@ def calculate_keyword_boost(user_text: str, major_name: str) -> float:
     major_lower = major_name.lower()
     boost = 0.0
 
-    # OPTIMIZATION 1: Direct title match boost (+0.35)
     if major_lower in user_text_lower:
         boost += 0.35
 
-    # OPTIMIZATION 2: Keyword weight (0.10 per match, capped at 0.40)
     keywords = MAJOR_KEYWORDS.get(major_name, [])
     if keywords:
         matches = sum(1 for kw in keywords if re.search(r'\b' + re.escape(kw) + r'\b', user_text_lower))
@@ -167,6 +181,13 @@ def rank_majors(user_profile_text: str, top_k: int = 3) -> list:
         return []
 
     user_vector = query_hf_embeddings([user_profile_text])
+    
+    # Ensure dimensions match before running cosine similarity
+    if user_vector.ndim == 3:
+        user_vector = np.mean(user_vector, axis=1)
+    if major_embeddings.ndim == 3:
+        major_embeddings = np.mean(major_embeddings, axis=1)
+
     cosine_scores = cosine_similarity(user_vector, major_embeddings)[0]
 
     final_scores = []
