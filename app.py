@@ -1,7 +1,7 @@
 import os
 import re
 import requests
-from groq import Groq  
+from groq import Groq
 from flask import Flask, request, jsonify, send_from_directory
 from dotenv import load_dotenv
 from chat_storage import init_db, save_to_history_file, get_history, log_recommendation
@@ -17,7 +17,12 @@ MCP_PROMPT_FILE = "mcp_prompt.txt"
 KNOWLEDGE_DIR = "knowledge_base"
 
 app = Flask(__name__, static_folder='.', static_url_path='')
-init_db()
+
+# Safely initialize database on application start
+try:
+    init_db()
+except Exception as e:
+    print(f"Warning: Database initialization error: {e}")
 
 client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
@@ -140,18 +145,25 @@ def generate_response(user_message, history, session_id="session_default"):
     system_prompt = load_mcp_prompt()
     general_knowledge = load_knowledge_base(user_message)
 
-    # 2. Vector Ranking & Persona Aggregation
-    past_user_messages = [msg.get("content", "") for msg in history if msg.get("role") == "user"]
-    past_user_messages.append(user_message)
-    aggregated_user_persona = " ".join(past_user_messages)
-
-    vector_results = rank_majors(aggregated_user_persona, top_k=2)
+    # 2. Vector Ranking & Persona Aggregation (Safeguarded)
+    vector_results = []
+    try:
+        past_user_messages = [msg.get("content", "") for msg in history if msg.get("role") == "user"]
+        past_user_messages.append(user_message)
+        aggregated_user_persona = " ".join(past_user_messages)
+        vector_results = rank_majors(aggregated_user_persona, top_k=2)
+    except Exception as e:
+        print(f"Vector ranking warning: {e}")
+        aggregated_user_persona = user_message
 
     top_major = vector_results[0]['major'] if vector_results else "None"
     top_score = vector_results[0]['similarity_score'] if vector_results else 0.0
     mode = "DISCOVERY" if top_score < 35.0 else "RECOMMENDATION"
 
-    log_recommendation(session_id, aggregated_user_persona, top_major, top_score, mode)
+    try:
+        log_recommendation(session_id, aggregated_user_persona, top_major, top_score, mode)
+    except Exception as e:
+        print(f"Logging recommendation warning: {e}")
 
     # 3. Dynamic Mode Instructions
     if mode == "DISCOVERY":
@@ -244,7 +256,7 @@ CRITICAL RESPONSE GUIDELINES:
 
     try:
         completion = client.chat.completions.create(
-            model="openai/gpt-oss-120b",
+            model="llama-3.3-70b-versatile",
             messages=messages,
             temperature=0.3,
             max_tokens=1000
@@ -252,6 +264,7 @@ CRITICAL RESPONSE GUIDELINES:
         raw_output = completion.choices[0].message.content
         return sanitize_khmer_text(raw_output)
     except Exception as e:
+        print(f"Groq API Error: {e}")
         return f"Advisory Error: {str(e)}"
 
 
@@ -269,7 +282,11 @@ def chat():
 
     chat_history = payload.get('history')
     if chat_history is None:
-        chat_history = get_history(session_id)
+        try:
+            chat_history = get_history(session_id)
+        except Exception as e:
+            print(f"Get history error: {e}")
+            chat_history = []
 
     if not user_message:
         return jsonify({'error': 'Request missing `message` field.'}), 400
@@ -278,8 +295,11 @@ def chat():
 
     answer = generate_response(user_message, chat_history, session_id)
     
-    save_to_history_file(session_id, "user", user_message)
-    save_to_history_file(session_id, "assistant", answer)
+    try:
+        save_to_history_file(session_id, "user", user_message)
+        save_to_history_file(session_id, "assistant", answer)
+    except Exception as e:
+        print(f"Save history error: {e}")
 
     return jsonify({'response': answer})
 
@@ -294,17 +314,20 @@ def telegram_webhook():
         user_text = message.get("text", "")
 
         if user_text:
-            # 1. Fetch user history from Turso using Telegram chat_id
-            history = get_history(chat_id)
+            try:
+                history = get_history(chat_id)
+            except Exception as e:
+                print(f"Telegram history fetch error: {e}")
+                history = []
 
-            # 2. Generate response using central AI logic
             bot_reply = generate_response(user_text, history, session_id=chat_id)
 
-            # 3. Save conversation history
-            save_to_history_file(chat_id, "user", user_text)
-            save_to_history_file(chat_id, "assistant", bot_reply)
+            try:
+                save_to_history_file(chat_id, "user", user_text)
+                save_to_history_file(chat_id, "assistant", bot_reply)
+            except Exception as e:
+                print(f"Telegram history save error: {e}")
 
-            # 4. Post response back to Telegram
             if TELEGRAM_BOT_TOKEN:
                 telegram_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
                 requests.post(telegram_url, json={"chat_id": chat_id, "text": bot_reply})
