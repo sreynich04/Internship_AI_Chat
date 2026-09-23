@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from chat_storage import init_db, save_to_history_file, get_history, log_recommendation
 from recommendation_engine import rank_majors
 
-load_dotenv()
+load_dotenv(override=True)
 
 # --- CONFIGURATION ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -254,18 +254,30 @@ CRITICAL RESPONSE GUIDELINES:
 
     messages.append({"role": "user", "content": user_message})
 
-    try:
-        completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=messages,
-            temperature=0.3,
-            max_tokens=1000
-        )
-        raw_output = completion.choices[0].message.content
-        return sanitize_khmer_text(raw_output)
-    except Exception as e:
-        print(f"Groq API Error: {e}")
-        return f"Advisory Error: {str(e)}"
+    # 5. Groq Model Cascade Fallback Execution
+    models_to_try = [
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.8-27b"
+    ]
+
+    last_error = None
+    for model_name in models_to_try:
+        try:
+            completion = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=0.3,
+                max_tokens=1000
+            )
+            raw_output = completion.choices[0].message.content
+            if raw_output:
+                return sanitize_khmer_text(raw_output)
+        except Exception as e:
+            print(f"⚠️ Groq API model {model_name} failed: {e}")
+            last_error = e
+
+    return f"Advisory Error: Unable to reach Groq LLM models. Details: {str(last_error)}"
 
 
 # --- ROUTES ---

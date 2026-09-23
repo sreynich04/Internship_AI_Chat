@@ -13,12 +13,13 @@ def get_connection():
     if TURSO_URL and TURSO_TOKEN:
         return libsql.connect(database=TURSO_URL, auth_token=TURSO_TOKEN)
     else:
-        conn = sqlite3.connect("analytics.db")
+        conn = sqlite3.connect("analytics.db", check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL;")
         return conn
 
 def init_db():
     """Initializes the recommendation logs and chat history schemas."""
+    conn = None
     try:
         conn = get_connection()
         conn.execute("""
@@ -42,13 +43,16 @@ def init_db():
             )
         """)
         conn.commit()
-        conn.close()
         print("✅ Database successfully connected & initialized in Turso Cloud.")
     except Exception as e:
         print(f"❌ Database Initialization Error: {e}")
+    finally:
+        if conn:
+            conn.close()
 
 def log_recommendation(session_id, user_persona, top_major, top_score, mode):
     """Logs recommendation metrics to the central database."""
+    conn = None
     try:
         conn = get_connection()
         conn.execute("""
@@ -56,12 +60,15 @@ def log_recommendation(session_id, user_persona, top_major, top_score, mode):
             VALUES (?, ?, ?, ?, ?)
         """, (str(session_id), user_persona, top_major, top_score, mode))
         conn.commit()
-        conn.close()
     except Exception as e:
         print(f"Error logging recommendation: {e}")
+    finally:
+        if conn:
+            conn.close()
 
 def save_to_history_file(session_id, role, content):
     """Saves a conversation turn to chat history in Turso."""
+    conn = None
     try:
         conn = get_connection()
         conn.execute("""
@@ -69,12 +76,15 @@ def save_to_history_file(session_id, role, content):
             VALUES (?, ?, ?)
         """, (str(session_id), role, content))
         conn.commit()
-        conn.close()
     except Exception as e:
         print(f"Error saving chat history: {e}")
+    finally:
+        if conn:
+            conn.close()
 
 def get_history(session_id):
     """Retrieves stored conversation history for a specific session."""
+    conn = None
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -84,11 +94,13 @@ def get_history(session_id):
             ORDER BY id ASC
         """, (str(session_id),))
         rows = cursor.fetchall()
-        conn.close()
         return [{"role": row[0], "content": row[1]} for row in rows]
     except Exception as e:
         print(f"Error retrieving history: {e}")
         return []
+    finally:
+        if conn:
+            conn.close()
 
 if __name__ == "__main__":
     init_db()

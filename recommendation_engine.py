@@ -1,61 +1,10 @@
 import os
 import re
 import numpy as np
-import requests
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 KNOWLEDGE_DIR = "knowledge_base"
-CACHE_FILE = "embeddings_cache.npy"
-
-# --- HUGGING FACE INFERENCE API ---
-HF_TOKEN = os.getenv("HF_TOKEN", "")
-
-def query_hf_embeddings(texts: list) -> np.ndarray:
-    """Fetches vector embeddings remotely with full safety checks for non-list JSON responses."""
-    headers = {}
-    if HF_TOKEN:
-        headers["Authorization"] = f"Bearer {HF_TOKEN}"
-
-    # Priority order of Hugging Face inference endpoints
-    urls = [
-        "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2",
-        "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
-    ]
-
-    for url in urls:
-        try:
-            response = requests.post(
-                url, 
-                headers=headers, 
-                json={"inputs": texts, "options": {"wait_for_model": True}},
-                timeout=8
-            )
-            
-            if response.status_code == 200:
-                res_json = response.json()
-                
-                # Check if HF returned an error dictionary instead of numerical vectors
-                if isinstance(res_json, dict):
-                    print(f"HF API returned dictionary/error: {res_json}")
-                    continue
-                
-                data = np.array(res_json, dtype=np.float32)
-                
-                # Handle 3D token arrays: mean pool to 2D (batch_size, 384)
-                if data.ndim == 3:
-                    data = np.mean(data, axis=1)
-                elif data.ndim == 1:
-                    data = np.expand_dims(data, axis=0)
-
-                if data.ndim == 2 and data.shape[1] == 384:
-                    return data
-            else:
-                print(f"HF API Error {response.status_code} on {url}: {response.text}")
-        except Exception as e:
-            print(f"HF API Exception on {url}: {e}")
-
-    # Fail-safe zero matrix fallback to prevent Flask 500 crashes
-    return np.zeros((len(texts), 384), dtype=np.float32)
 
 KNOWN_MAJORS = [
     "AI and Data Science",
@@ -133,42 +82,32 @@ def extract_majors_from_text(file_content: str) -> dict:
             
     return extracted
 
-def get_cached_embeddings(major_texts: list):
-    if os.path.exists(CACHE_FILE):
-        try:
-            cached = np.load(CACHE_FILE)
-            if cached.ndim == 3:
-                cached = np.mean(cached, axis=1)
-            if len(cached) == len(major_texts) and cached.ndim == 2:
-                return cached
-        except Exception:
-            pass
-    
-    embeddings = query_hf_embeddings(major_texts)
-    if np.any(embeddings):
-        np.save(CACHE_FILE, embeddings)
-    return embeddings
-
-def load_and_embed_majors():
+def load_majors_data():
     major_names = []
     major_texts = []
     major_docs = {}
 
     target_file = os.path.join(KNOWLEDGE_DIR, "Bachelors Programs.txt")
     if os.path.exists(target_file):
-        with open(target_file, 'r', encoding='utf-8') as f:
-            content = f.read()
-            extracted = extract_majors_from_text(content)
-            for name, text in extracted.items():
-                major_names.append(name)
-                major_texts.append(text)
-                major_docs[name] = text
+        try:
+            with open(target_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+                extracted = extract_majors_from_text(content)
+                for name, text in extracted.items():
+                    major_names.append(name)
+                    major_texts.append(text)
+                    major_docs[name] = text
+        except Exception as e:
+            print(f"Error reading knowledge base file: {e}")
 
     if not major_texts:
-        return [], np.array([]), {}
+        for major in KNOWN_MAJORS:
+            major_names.append(major)
+            desc = f"{major} degree program at CamTech University."
+            major_texts.append(f"{major}: {desc}")
+            major_docs[major] = desc
 
-    major_embeddings = get_cached_embeddings(major_texts)
-    return major_names, major_embeddings, major_docs
+    return major_names, major_texts, major_docs
 
 def calculate_keyword_boost(user_text: str, major_name: str) -> float:
     user_text_lower = user_text.lower()
@@ -186,25 +125,24 @@ def calculate_keyword_boost(user_text: str, major_name: str) -> float:
     return boost
 
 def rank_majors(user_profile_text: str, top_k: int = 3) -> list:
-    try:
-        major_names, major_embeddings, major_docs = load_and_embed_majors()
+    if not user_profile_text or not user_profile_text.strip():
+        return []
 
-        if len(major_names) == 0:
+    try:
+        major_names, major_texts, major_docs = load_majors_data()
+
+        if not major_names:
             return []
 
-        user_vector = query_hf_embeddings([user_profile_text])
-        
-        # Ensure matrix dimensions align properly
-        if user_vector.ndim == 3:
-            user_vector = np.mean(user_vector, axis=1)
-        if major_embeddings.ndim == 3:
-            major_embeddings = np.mean(major_embeddings, axis=1)
+        # Local TF-IDF similarity calculation (No network requests required)
+        corpus = [user_profile_text] + major_texts
+        vectorizer = TfidfVectorizer(stop_words='english')
+        tfidf_matrix = vectorizer.fit_transform(corpus)
 
-        # Calculate cosine similarity if vectors exist, otherwise default to keyword ranking
-        if user_vector.ndim == 2 and major_embeddings.ndim == 2 and user_vector.shape[1] == major_embeddings.shape[1]:
-            cosine_scores = cosine_similarity(user_vector, major_embeddings)[0]
-        else:
-            cosine_scores = np.zeros(len(major_names))
+        user_vector = tfidf_matrix[0]
+        major_vectors = tfidf_matrix[1:]
+
+        cosine_scores = cosine_similarity(user_vector, major_vectors)[0]
 
         final_scores = []
         for idx, major in enumerate(major_names):
@@ -220,7 +158,7 @@ def rank_majors(user_profile_text: str, top_k: int = 3) -> list:
             results.append({
                 "major": major_names[idx],
                 "similarity_score": round(final_scores[idx] * 100, 2),
-                "content": major_docs[major_names[idx]]
+                "content": major_docs.get(major_names[idx], "")
             })
 
         return results

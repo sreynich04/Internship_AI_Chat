@@ -2,13 +2,13 @@ import os
 import telebot
 from dotenv import load_dotenv
 
-# Import core backend functions from your existing app.py pipeline
+# Import core backend functions from app.py pipeline
 from app import generate_response
 from chat_storage import get_history, save_to_history_file
 
 load_dotenv()
 
-# Load Telegram Token from environment or fallback to your key
+# Load Telegram Token from environment
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8960580452:AAG3PI3zvbxUBjHzqP9fJIT-oj0zRj4I248")
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
@@ -36,14 +36,15 @@ def handle_telegram_chat(message):
     bot.send_chat_action(message.chat.id, 'typing')
 
     try:
-        # 3. Retrieve conversation history for this Telegram user from SQLite
+        # 3. Retrieve conversation history for this Telegram user from SQLite/Turso
         chat_history = get_history(session_id)
 
-        # 4. Generate answer using your complete app.py pipeline (Groq, RAG, Sanitization, DB Logging)
+        # 4. Generate answer using complete app.py pipeline
         bot_response = generate_response(user_text, chat_history, session_id)
 
         # 5. Save user message and AI response back to chat storage
-        save_to_history_file(session_id, user_text, bot_response)
+        save_to_history_file(session_id, "user", user_text)
+        save_to_history_file(session_id, "assistant", bot_response)
 
         # 6. Send formatted reply back to user
         try:
@@ -57,5 +58,7 @@ def handle_telegram_chat(message):
         bot.reply_to(message, "I encountered an error processing your request. Please try again.")
 
 if __name__ == "__main__":
+    print("🤖 Deleting existing active webhooks...")
+    bot.remove_webhook()
     print("🤖 CamTech Telegram Bot successfully connected to app.py logic...")
     bot.infinity_polling()
