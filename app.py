@@ -18,6 +18,19 @@ KNOWLEDGE_DIR = "knowledge_base"
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
+# Auto-set Telegram webhook on startup
+if TELEGRAM_BOT_TOKEN:
+    try:
+        webhook_url = "https://internship-ai-chat.onrender.com/telegram"
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setWebhook",
+            json={"url": webhook_url},
+            timeout=10
+        )
+        print(f"✅ Webhook registered to {webhook_url}")
+    except Exception as e:
+        print(f"⚠️ Webhook setup error: {e}")
+
 # Safely initialize database on application start
 try:
     init_db()
