@@ -7,11 +7,9 @@ TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
 def get_db_connection():
     if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
         try:
-            # Convert libsql:// to https:// required by Python libsql library
-            url = TURSO_DATABASE_URL.replace("libsql://", "https://")
-            
             import libsql
-            conn = libsql.connect(database=url, auth_token=TURSO_AUTH_TOKEN)
+            # Keep libsql:// scheme so libsql connects remotely instead of searching for a local file
+            conn = libsql.connect(database=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
             print("⚡ Successfully connected to Turso Database!")
             return conn
         except Exception as e:
@@ -38,8 +36,8 @@ def init_db():
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS recommendation_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                recommendation TEXT NOT NULL,
+                session_id TEXT,
+                recommendation TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -63,7 +61,7 @@ def save_message(session_id, role, content):
         print(f"❌ save_message error: {e}")
 
 def save_to_history_file(session_id, role, content):
-    """Function expected by app.py"""
+    """Alias for save_message expected by app.py"""
     save_message(session_id, role, content)
 
 def get_history(session_id, limit=10):
@@ -81,8 +79,14 @@ def get_history(session_id, limit=10):
         print(f"❌ get_history error: {e}")
         return []
 
-def log_recommendation(session_id, recommendation):
+def log_recommendation(*args, **kwargs):
+    """
+    Flexibly handles positional/keyword arguments sent by app.py.
+    """
     try:
+        session_id = str(args[0]) if len(args) > 0 else str(kwargs.get("session_id", "unknown"))
+        recommendation = ", ".join(map(str, args[1:])) if len(args) > 1 else str(kwargs)
+
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
