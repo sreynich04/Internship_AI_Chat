@@ -270,8 +270,9 @@ CRITICAL RESPONSE GUIDELINES:
 
     # 5. Groq Model Cascade Execution with Active Production Models & Timeouts
     models_to_try = [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant"
+       "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.8-27b"
     ]
 
     last_error = None
@@ -363,7 +364,7 @@ def telegram_webhook():
                         timeout=5.0
                     )
                 except Exception as send_err:
-                    print(f"⚠️ Telegram sendMessage error/timeout: {send_err}")
+                    print(f"⚠️ Telegram send Message error/timeout: {send_err}")
 
     return "OK", 200
 
