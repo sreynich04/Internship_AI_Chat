@@ -1,22 +1,29 @@
 import os
 import sqlite3
+import concurrent.futures
 
 TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL")
 TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
 
+def _connect_turso():
+    import libsql
+    return libsql.connect(database=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
+
 def get_db_connection():
     if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
         try:
-            import libsql
-            # Keep libsql:// scheme so libsql connects remotely instead of searching for a local file
-            conn = libsql.connect(database=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
-            print("⚡ Successfully connected to Turso Database!")
-            return conn
+            # Strict 3-second timeout guard to prevent Gunicorn worker freezes
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_connect_turso)
+                conn = future.result(timeout=3.0)
+                print("⚡ Successfully connected to Turso Database!")
+                return conn
+        except concurrent.futures.TimeoutError:
+            print("⏱️ TURSO CONNECTION TIMED OUT (3s limit). Falling back to local SQLite.")
         except Exception as e:
-            print(f"❌ TURSO CONNECTION FAILED: {e}")
-            print("⚠️ Falling back to local SQLite.")
+            print(f"❌ TURSO CONNECTION FAILED: {e}. Falling back to local SQLite.")
     else:
-        print("⚠️ TURSO_DATABASE_URL or TURSO_AUTH_TOKEN missing in Environment. Using local SQLite.")
+        print("⚠️ TURSO_DATABASE_URL or TURSO_AUTH_TOKEN missing. Using local SQLite.")
     
     return sqlite3.connect("chat_history.db")
 
@@ -61,7 +68,6 @@ def save_message(session_id, role, content):
         print(f"❌ save_message error: {e}")
 
 def save_to_history_file(session_id, role, content):
-    """Alias for save_message expected by app.py"""
     save_message(session_id, role, content)
 
 def get_history(session_id, limit=10):
@@ -80,9 +86,6 @@ def get_history(session_id, limit=10):
         return []
 
 def log_recommendation(*args, **kwargs):
-    """
-    Flexibly handles positional/keyword arguments sent by app.py.
-    """
     try:
         session_id = str(args[0]) if len(args) > 0 else str(kwargs.get("session_id", "unknown"))
         recommendation = ", ".join(map(str, args[1:])) if len(args) > 1 else str(kwargs)
