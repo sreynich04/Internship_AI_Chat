@@ -5,27 +5,31 @@ TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL")
 TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
 
 def get_db_connection():
-    # 1. Try connecting to Turso if environment variables are set
     if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
         try:
-            try:
-                import libsql
-                return libsql.connect(database=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
-            except ImportError:
-                import libsql_experimental as libsql
-                return libsql.connect(database=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
+            # Ensure URL uses https:// for the Python libsql client
+            url = TURSO_DATABASE_URL.replace("libsql://", "https://")
+            
+            import libsql
+            conn = libsql.connect(database=url, auth_token=TURSO_AUTH_TOKEN)
+            print("⚡ Successfully connected to Turso Database!")
+            return conn
         except Exception as e:
-            print(f"⚠️ Turso connection failed ({e}). Falling back to local SQLite.")
+            print(f"❌ TURSO CONNECTION FAILED: {e}")
+            print("⚠️ Falling back to local SQLite.")
+    else:
+        print("⚠️ TURSO_DATABASE_URL or TURSO_AUTH_TOKEN missing in Environment. Using local SQLite.")
     
-    # 2. Safe local SQLite fallback
     return sqlite3.connect("chat_history.db")
 
 def init_db():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        
+        # Create chat_history table to match your Turso database schema
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS messages (
+            CREATE TABLE IF NOT EXISTS chat_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL,
                 role TEXT NOT NULL,
@@ -43,7 +47,6 @@ def init_db():
         """)
         conn.commit()
         conn.close()
-        print("✅ Database initialized successfully.")
     except Exception as e:
         print(f"❌ init_db error: {e}")
 
@@ -52,11 +55,12 @@ def save_message(session_id, role, content):
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",
+            "INSERT INTO chat_history (session_id, role, content) VALUES (?, ?, ?)",
             (session_id, role, content)
         )
         conn.commit()
         conn.close()
+        print(f"✅ Saved message for {session_id} to database.")
     except Exception as e:
         print(f"❌ save_message error: {e}")
 
@@ -65,13 +69,11 @@ def get_history(session_id, limit=10):
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT role, content FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+            "SELECT role, content FROM chat_history WHERE session_id = ? ORDER BY id DESC LIMIT ?",
             (session_id, limit)
         )
         rows = cursor.fetchall()
         conn.close()
-        
-        # Return in chronological order for LLM context
         return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
     except Exception as e:
         print(f"❌ get_history error: {e}")
