@@ -7,7 +7,7 @@ TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
 def get_db_connection():
     if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
         try:
-            # Ensure URL uses https:// for the Python libsql client
+            # Convert libsql:// to https:// required by Python libsql library
             url = TURSO_DATABASE_URL.replace("libsql://", "https://")
             
             import libsql
@@ -26,8 +26,6 @@ def init_db():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
-        # Create chat_history table to match your Turso database schema
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS chat_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,6 +62,10 @@ def save_message(session_id, role, content):
     except Exception as e:
         print(f"❌ save_message error: {e}")
 
+def save_to_history_file(session_id, role, content):
+    """Function expected by app.py"""
+    save_message(session_id, role, content)
+
 def get_history(session_id, limit=10):
     try:
         conn = get_db_connection()
@@ -78,3 +80,17 @@ def get_history(session_id, limit=10):
     except Exception as e:
         print(f"❌ get_history error: {e}")
         return []
+
+def log_recommendation(session_id, recommendation):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO recommendation_logs (session_id, recommendation) VALUES (?, ?)",
+            (session_id, recommendation)
+        )
+        conn.commit()
+        conn.close()
+        print(f"✅ Logged recommendation for {session_id}.")
+    except Exception as e:
+        print(f"❌ log_recommendation error: {e}")
