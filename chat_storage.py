@@ -1,30 +1,13 @@
-import os
 import sqlite3
-import libsql
-from dotenv import load_dotenv
-
-load_dotenv()
-
-TURSO_URL = os.getenv("TURSO_DATABASE_URL")
-TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
-
 
 def get_connection():
-    """Connects to Turso cloud database with instant local fallback if network lags."""
-    if TURSO_URL and TURSO_TOKEN:
-        try:
-            return libsql.connect(database=TURSO_URL, auth_token=TURSO_TOKEN)
-        except Exception as e:
-            print(f"⚠️ Turso cloud connection failed: {e}. Falling back to local SQLite.")
-
-    # Local SQLite fallback
-    conn = sqlite3.connect("analytics.db", check_same_thread=False, timeout=3)
+    """Uses standard Python sqlite3 to prevent C-extension socket deadlocks on Render."""
+    conn = sqlite3.connect("analytics.db", check_same_thread=False, timeout=5)
     conn.execute("PRAGMA journal_mode=WAL;")
     return conn
 
 
 def init_db():
-    """Initializes database tables securely."""
     conn = None
     try:
         conn = get_connection()
@@ -49,19 +32,15 @@ def init_db():
             )
         """)
         conn.commit()
-        print("✅ Database successfully connected & initialized.")
+        print("✅ Local SQLite database initialized successfully.")
     except Exception as e:
         print(f"❌ DB Init Warning: {e}")
     finally:
         if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
+            conn.close()
 
 
 def save_to_history_file(session_id, role, content):
-    """Saves a conversation turn safely without blocking Flask."""
     conn = None
     try:
         conn = get_connection()
@@ -71,17 +50,13 @@ def save_to_history_file(session_id, role, content):
         """, (str(session_id), role, content))
         conn.commit()
     except Exception as e:
-        print(f"⚠️ History save skipped (non-critical): {e}")
+        print(f"⚠️ History save error: {e}")
     finally:
         if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
+            conn.close()
 
 
 def get_history(session_id):
-    """Retrieves conversation history safely."""
     conn = None
     try:
         conn = get_connection()
@@ -95,18 +70,14 @@ def get_history(session_id):
         rows = cursor.fetchall()
         return [{"role": row[0], "content": row[1]} for row in rows]
     except Exception as e:
-        print(f"⚠️ History fetch skipped (non-critical): {e}")
+        print(f"⚠️ History fetch error: {e}")
         return []
     finally:
         if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
+            conn.close()
 
 
 def log_recommendation(session_id, user_persona, top_major, top_score, mode):
-    """Logs recommendation metrics safely."""
     conn = None
     try:
         conn = get_connection()
@@ -116,13 +87,10 @@ def log_recommendation(session_id, user_persona, top_major, top_score, mode):
         """, (str(session_id), user_persona, top_major, top_score, mode))
         conn.commit()
     except Exception as e:
-        print(f"⚠️ Analytics log skipped (non-critical): {e}")
+        print(f"⚠️ Analytics log error: {e}")
     finally:
         if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
+            conn.close()
 
 
 if __name__ == "__main__":

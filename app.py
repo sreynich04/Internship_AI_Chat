@@ -18,8 +18,6 @@ KNOWLEDGE_DIR = "knowledge_base"
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
-
-
 # Safely initialize database on application start
 try:
     init_db()
@@ -28,6 +26,20 @@ except Exception as e:
 
 client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
+# Auto-register Telegram Webhook on app startup with a 5s timeout safety net
+if TELEGRAM_BOT_TOKEN:
+    try:
+        render_domain = os.getenv("RENDER_EXTERNAL_URL", "https://internship-ai-chat.onrender.com")
+        webhook_target = f"{render_domain}/telegram"
+        res = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setWebhook",
+            json={"url": webhook_target},
+            timeout=5.0  # 👈 Prevents server freeze during startup
+        )
+        print(f"✅ Webhook setup status: {res.json()}")
+    except Exception as e:
+        print(f"⚠️ Webhook setup error on startup: {e}")
+
 
 def sanitize_khmer_text(text: str) -> str:
     """Replaces hallucinated Thai tokens with standard Khmer terminology."""
@@ -35,7 +47,7 @@ def sanitize_khmer_text(text: str) -> str:
         return ""
     thai_to_khmer_map = {
         "หลักสูตร": "កម្មវិធីសិក្សា",
-        "มหาวิทยาลัย": "សាកលវិទ្យាល័យ",
+        "มหาวิทยาลัย": "សាកលวิទ្យាល័យ",
         "วิชา": "មុខวิជ្ជា",
         "สมัคร": "ចុះឈ្មោះ",
     }
@@ -256,11 +268,11 @@ CRITICAL RESPONSE GUIDELINES:
 
     messages.append({"role": "user", "content": user_message})
 
-    # 5. Groq Model Cascade Fallback Execution
+    # 5. Active Groq Model Cascade Execution with STRICT TIMEOUT
     models_to_try = [
-        "openai/gpt-oss-120b",
-        "openai/gpt-oss-20b",
-        "qwen/qwen3.8-27b"
+        "llama-3.1-8b-instant",
+        "llama-3.3-70b-versatile",
+        "mixtral-8x7b-32768"
     ]
 
     last_error = None
@@ -270,7 +282,8 @@ CRITICAL RESPONSE GUIDELINES:
                 model=model_name,
                 messages=messages,
                 temperature=0.3,
-                max_tokens=1000
+                max_tokens=1000,
+                timeout=15.0  # 👈 Prevents Groq network delays from triggering Gunicorn SIGKILL
             )
             raw_output = completion.choices[0].message.content
             if raw_output:
@@ -344,7 +357,14 @@ def telegram_webhook():
 
             if TELEGRAM_BOT_TOKEN:
                 telegram_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-                requests.post(telegram_url, json={"chat_id": chat_id, "text": bot_reply})
+                try:
+                    requests.post(
+                        telegram_url,
+                        json={"chat_id": chat_id, "text": bot_reply},
+                        timeout=5.0  #Prevents webhook call from locking Gunicorn
+                    )
+                except Exception as send_err:
+                    print(f"⚠️ Telegram sendMessage error/timeout: {send_err}")
 
     return "OK", 200
 
