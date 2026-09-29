@@ -1,97 +1,78 @@
+import os
 import sqlite3
 
-def get_connection():
-    """Uses standard Python sqlite3 to prevent C-extension socket deadlocks on Render."""
-    conn = sqlite3.connect("analytics.db", check_same_thread=False, timeout=5)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    return conn
+TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL")
+TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
 
+def get_db_connection():
+    # 1. Try connecting to Turso if environment variables are set
+    if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
+        try:
+            try:
+                import libsql
+                return libsql.connect(database=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
+            except ImportError:
+                import libsql_experimental as libsql
+                return libsql.connect(database=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
+        except Exception as e:
+            print(f"⚠️ Turso connection failed ({e}). Falling back to local SQLite.")
+    
+    # 2. Safe local SQLite fallback
+    return sqlite3.connect("chat_history.db")
 
 def init_db():
-    conn = None
     try:
-        conn = get_connection()
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS recommendation_logs (
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                session_id TEXT,
-                user_persona TEXT,
-                top_major TEXT,
-                top_score REAL,
-                mode TEXT
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS chat_history (
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS recommendation_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT,
-                role TEXT,
-                content TEXT,
+                session_id TEXT NOT NULL,
+                recommendation TEXT NOT NULL,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
         conn.commit()
-        print("✅ Local SQLite database initialized successfully.")
+        conn.close()
+        print("✅ Database initialized successfully.")
     except Exception as e:
-        print(f"❌ DB Init Warning: {e}")
-    finally:
-        if conn:
-            conn.close()
+        print(f"❌ init_db error: {e}")
 
-
-def save_to_history_file(session_id, role, content):
-    conn = None
+def save_message(session_id, role, content):
     try:
-        conn = get_connection()
-        conn.execute("""
-            INSERT INTO chat_history (session_id, role, content)
-            VALUES (?, ?, ?)
-        """, (str(session_id), role, content))
-        conn.commit()
-    except Exception as e:
-        print(f"⚠️ History save error: {e}")
-    finally:
-        if conn:
-            conn.close()
-
-
-def get_history(session_id):
-    conn = None
-    try:
-        conn = get_connection()
+        conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT role, content FROM chat_history
-            WHERE session_id = ?
-            ORDER BY id ASC
-            LIMIT 15
-        """, (str(session_id),))
-        rows = cursor.fetchall()
-        return [{"role": row[0], "content": row[1]} for row in rows]
-    except Exception as e:
-        print(f"⚠️ History fetch error: {e}")
-        return []
-    finally:
-        if conn:
-            conn.close()
-
-
-def log_recommendation(session_id, user_persona, top_major, top_score, mode):
-    conn = None
-    try:
-        conn = get_connection()
-        conn.execute("""
-            INSERT INTO recommendation_logs (session_id, user_persona, top_major, top_score, mode)
-            VALUES (?, ?, ?, ?, ?)
-        """, (str(session_id), user_persona, top_major, top_score, mode))
+        cursor.execute(
+            "INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",
+            (session_id, role, content)
+        )
         conn.commit()
+        conn.close()
     except Exception as e:
-        print(f"⚠️ Analytics log error: {e}")
-    finally:
-        if conn:
-            conn.close()
+        print(f"❌ save_message error: {e}")
 
-
-if __name__ == "__main__":
-    init_db()
+def get_history(session_id, limit=10):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT role, content FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+            (session_id, limit)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        
+        # Return in chronological order for LLM context
+        return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
+    except Exception as e:
+        print(f"❌ get_history error: {e}")
+        return []
